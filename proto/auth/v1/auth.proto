@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package auth.v1;
+
+option go_package = "github.com/alexdolgov/auth-service/internal/identity/port/grpc/pb";
+
+service AuthService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+  rpc ConfirmPasswordReset(ConfirmPasswordResetRequest) returns (ConfirmPasswordResetResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+}
+
+message RegisterRequest {
+  string email = 1;
+  string password = 2;
+  string password_confirm = 3;
+}
+
+message RegisterResponse {
+  string user_id = 1;
+  string email = 2;
+}
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  string session_id = 3;
+}
+
+message LogoutRequest {
+  string session_id = 1;
+}
+
+message LogoutResponse {}
+
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+message RequestPasswordResetResponse {
+  string message = 1;
+}
+
+message ConfirmPasswordResetRequest {
+  string token = 1;
+  string new_password = 2;
+  string confirm_password = 3;
+}
+
+message ConfirmPasswordResetResponse {
+  string message = 1;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  string session_id = 3;
+}

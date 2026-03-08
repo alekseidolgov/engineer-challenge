@@ -1,114 +1,296 @@
-# Advanced Engineer Challenge
+# Auth Service — Engineering Challenge
 
-Не забудьте сперва поставить Star. Спасибо!
+## Выбор стека и аргументация
 
-UPD: Вакансия немного переехала. Смотрите ссылку.
+**Go** выбран как основной язык по следующим причинам:
+- Строгая типизация и компиляция — ошибки ловятся до runtime.
+- Отличная поддержка gRPC (grpc-go, protoc-gen-go) — первоклассный стек без прослоек.
+- Встроенный тестовый фреймворк, race detector, benchmark — всё из коробки.
+- Простая модель конкурентности для rate limiting и graceful shutdown.
+- Минимальный runtime, идеален для контейнеров (Alpine + static binary).
 
-Этот репозиторий — инженерный челлендж для кандидатов на backend/fullstack позиции.
+**Альтернативы, которые рассматривались:**
+- **Rust** — отличная безопасность памяти, но выше порог входа и дольше цикл разработки для challenge.
+- **TypeScript/Node** — быстрый старт, но хуже производительность и типизация для domain layer.
+- **Java/Kotlin + Spring** — зрелая экосистема DDD, но тяжёлый runtime и boilerplate.
 
-Задача специально узкая по продукту, но широкая по архитектуре: мы оцениваем не «как быстро собрать формы логина», а то, как вы проектируете систему.
+## Как запустить
 
-## Контекст
+### Предусловия
+- Docker и Docker Compose
 
-Вам нужно реализовать модуль аутентификации для 3 пользовательских сценариев:
-1. Регистрация
-2. Авторизация
-3. Восстановление пароля
+### Запуск
+```bash
+# Поднять всё окружение (PostgreSQL + Redis + migrator + auth-service)
+docker compose -f infra/docker-compose.yml up --build -d
 
-UI-дизайн (https://www.figma.com/design/31KetUbya482vMSGgyiNIf/Orbitto-%7C-Service--Copy-?node-id=102-12806&t=TMlkJ3c3j3vJF5fb-4) уже подготовлен и будет отправной точкой для клиентской части.
+# Проверить что миграции прошли
+docker compose -f infra/docker-compose.yml logs migrator
 
-## Что важно
+# Проверить логи сервиса
+docker compose -f infra/docker-compose.yml logs -f auth-service
 
-Решение должно демонстрировать инженерную зрелость:
-- DDD (явные bounded context, модель домена, язык предметной области)
-- CQRS (разделение команд и запросов)
-- IaC (воспроизводимое окружение инфраструктуры)
-- Осознанный выбор языка и стека (язык выбираете на своё усмотрение, но выбор нужно аргументировать)
+# Остановить
+docker compose -f infra/docker-compose.yml down -v
+```
 
-`CRUD + controller + stock REST auth по документации` не считается целевым уровнем решения для этого челленджа.
+### Порядок запуска
+Миграции вынесены в отдельный контейнер `migrator` и **не выполняются внутри auth-service**. Это принципиальное решение: при горизонтальном масштабировании (10+ инстансов) запуск миграций из каждого инстанса — это гонка, потенциальные deadlock'и и dirty state в `schema_migrations`. Мигратор отрабатывает один раз, и только после его успешного завершения (`exit 0`) поднимаются сервисы. В Kubernetes это маппится на `initContainer` или `Job` перед `Deployment`.
 
-## Обязательные требования
+### Запуск тестов
+```bash
+go test -v -count=1 ./...
+```
 
-1. Архитектура
-- Покажите доменную модель и границы контекстов.
-- Выделите command side и query side (даже если в упрощенном виде).
-- Опишите ключевые инварианты и бизнес-правила (например, правила reset-token, валидация пароля, ограничения на повторную отправку).
+### Проверка через grpcurl
+```bash
+# Регистрация
+grpcurl -plaintext -d '{"email":"user@example.com","password":"password123","password_confirm":"password123"}' \
+  localhost:50051 auth.v1.AuthService/Register
 
-2. API/протокол взаимодействия
-- Предпочтительный уровень: `gRPC` и/или `GraphQL`.
-- `Только REST` допустим исключительно при сильной архитектурной аргументации, иначе это будет существенным минусом.
+# Логин
+grpcurl -plaintext -d '{"email":"user@example.com","password":"password123"}' \
+  localhost:50051 auth.v1.AuthService/Login
 
-3. Infrastructure as Code
-- Запуск окружения должен быть описан кодом.
-- Минимум: локально воспроизводимый стенд (например, Docker Compose).
-- Плюс в оценке: Terraform/Kubernetes manifests/Helm.
+# Обновление токена (подставить refresh_token из Login)
+grpcurl -plaintext -d '{"refresh_token":"<REFRESH_TOKEN>"}' \
+  localhost:50051 auth.v1.AuthService/RefreshToken
 
-4. Безопасность
-- Без хранения паролей в открытом виде.
-- Корректная работа с токенами/сессиями.
-- Защита базовых auth-флоу (rate limiting, expiration, replay/abuse considerations).
+# Logout
+grpcurl -plaintext -d '{"session_id":"<SESSION_ID>"}' \
+  localhost:50051 auth.v1.AuthService/Logout
 
-5. Наблюдаемость и качество
-- Логи, метрики или трейсинг (минимум один из блоков).
-- Тесты критичных участков (доменные правила, auth-флоу, интеграционные точки).
+# Запрос восстановления пароля
+grpcurl -plaintext -d '{"email":"user@example.com"}' \
+  localhost:50051 auth.v1.AuthService/RequestPasswordReset
 
-6. Технологические решения
-- Язык программирования и фреймворки выбираете самостоятельно.
-- В `README` обязательно зафиксируйте, почему выбрали именно этот стек и какие альтернативы рассматривали.
+# Подтверждение сброса пароля (подставить token из письма)
+grpcurl -plaintext -d '{"token":"<RESET_TOKEN>","new_password":"newpass123","confirm_password":"newpass123"}' \
+  localhost:50051 auth.v1.AuthService/ConfirmPasswordReset
 
-## Ограничения и анти-паттерны
+# Health check
+grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check
+```
 
-Следующие подходы считаются слабым решением:
-- Полностью «коробочный» auth-провайдер без вашей архитектурной проработки домена.
-- Копирование шаблонного туториала без обоснования trade-offs.
-- Монолитный слой handlers/controllers без разделения доменной и инфраструктурной логики.
+## Архитектурная схема
 
-Можно использовать библиотеки для криптографии, JWT, транспорта и т.д., но архитектурные решения должны быть вашими.
+```mermaid
+flowchart TB
+    subgraph transport [Transport Layer]
+        GRPC[gRPC Server]
+        Interceptors[Logging Interceptor]
+    end
 
-## Что нужно сдать
+    subgraph app [Application Layer — CQRS]
+        Commands[Command Handlers]
+        Queries[Query Handlers]
+    end
 
-1. Исходный код в вашем fork.
-2. Обновленный `README` в вашем fork с:
-- как запустить проект;
-- архитектурная схема (можно Mermaid/PlantUML);
-- объяснение, где в решении DDD, CQRS и IaC;
-- ключевые компромиссы (trade-offs);
-- что сделали бы следующим шагом в production-версии.
-3. Минимальный набор тестов и инструкции по их запуску.
+    subgraph domainLayer [Domain Layer]
+        User[User Aggregate]
+        Email[Email VO]
+        Password[Password VO]
+        Session[Session Entity]
+        ResetToken[ResetToken Entity]
+        Events[Domain Events]
+    end
 
-## Формат выполнения
+    subgraph infra [Infrastructure Layer]
+        PgUserRepo[Postgres UserRepo]
+        PgSessionRepo[Postgres SessionRepo]
+        PgResetRepo[Postgres ResetTokenRepo]
+        Argon2[Argon2id Hasher]
+        JWT[JWT Issuer]
+        RateLimiter[InMemory RateLimiter]
+        Outbox[Mock Outbox]
+    end
 
-1. Сделайте fork этого репозитория.
-2. Пройдите Pinterest-челлендж:
-- соберите `moodboard`;
-- соберите `anti-moodboard`.
-3. Реализуйте решение в своем fork.
-4. Оформите результат в `README`.
-5. Отправьте 3 ссылки в отклике:
-- ссылка на `moodboard`;
-- ссылка на `anti-moodboard`;
-- ссылка на ваш fork.
+    subgraph iac [IaC]
+        Compose[Docker Compose]
+        Migrations[SQL Migrations]
+        Dockerfile[Multi-stage Dockerfile]
+    end
 
-## Использование ИИ
+    GRPC --> Interceptors --> Commands
+    GRPC --> Interceptors --> Queries
+    Commands --> User
+    Commands --> Session
+    Commands --> ResetToken
+    Commands --> Events
+    Queries --> Session
+    User --> PgUserRepo
+    Session --> PgSessionRepo
+    ResetToken --> PgResetRepo
+    Commands --> Argon2
+    Commands --> JWT
+    GRPC --> RateLimiter
+    Events --> Outbox
+    PgUserRepo --> Compose
+    PgSessionRepo --> Compose
+    PgResetRepo --> Compose
+```
 
-- Использование ИИ-инструментов в рамках челленджа разрешено.
-- Если используете ИИ, добавьте в ваш fork папку `.agents`, чтобы было видно, каким образом вы строили процесс решения.
+## Где в решении DDD, CQRS и IaC
 
-## Критерии оценки
+### DDD
 
-1. Архитектурное мышление (DDD/CQRS/IaC).
-2. Качество инженерных решений и аргументация trade-offs.
-3. Надежность и безопасность auth-флоу.
-4. Чистота кода и тестовое покрытие критичных сценариев.
-5. Операбельность: насколько легко поднять и проверить решение.
+**Bounded Context: Identity** (`internal/identity/`)
 
-## Бонусные сигналы
+Один bounded context, а не два — осознанное решение. Критерии выделения bounded context по Эвансу:
 
-- Event-driven взаимодействие между компонентами.
-- Service mesh / policy-driven networking (если уместно и обосновано).
-- Продуманная стратегия эволюции схемы данных и backward compatibility.
-- ADR (Architecture Decision Records) для ключевых решений.
+1. **Ubiquitous Language** — слово `User` в регистрации, логине и восстановлении пароля означает одно и то же: владелец учётных данных (email + password hash). Нет расхождения языка — нет границы.
+2. **Единый агрегат** — восстановление пароля мутирует `User.PasswordHash`, то есть работает с тем же агрегатом, что и регистрация. Выделение `CredentialRecovery` в отдельный контекст потребовало бы либо дублирования `User`, либо shared kernel, либо синхронного cross-context вызова — всё это искусственная сложность.
+3. **Единая политика** — изменение правил валидации пароля затрагивает и регистрацию, и reset одновременно. Общие инварианты = один контекст.
 
-## Важно
+Отдельный bounded context имел бы смысл, если бы recovery шёл через независимый email-verification сервис с собственной моделью (`Recipient`, `VerificationAttempt`) и общался с Identity через события.
 
-Нас интересует не «идеальный продакшен за вечер», а качество инженерного мышления и способность строить систему осознанно.
+| Артефакт | Расположение |
+|---|---|
+| Bounded Context | `Identity` — аутентификация, учётные данные и их восстановление |
+| Агрегаты | `User` (корень), `Session`, `ResetToken` |
+| Value Objects | `Email`, `Password` |
+| Доменные события | `UserRegistered`, `PasswordResetRequested`, `PasswordResetCompleted` |
+| Инварианты | email uniqueness, password >= 8 chars, password confirmation match, reset token one-time + TTL + cooldown |
+| Repository ports | `domain/repository.go` — интерфейсы, инфраструктура не просачивается в домен |
+| Service ports | `domain/services.go` — `PasswordHasher`, `AccessTokenIssuer` |
+
+### CQRS
+
+| Сторона | Handlers | Что делают |
+|---|---|---|
+| Command | `RegisterUser`, `LoginUser`, `LogoutUser`, `RefreshToken`, `RequestPasswordReset`, `ConfirmPasswordReset` | Изменяют состояние системы |
+
+В текущем scope все операции — команды (изменяют состояние: создают пользователя, сессию, ротируют токен, сбрасывают пароль). Query side представлен на уровне **отдельных read-интерфейсов** репозиториев (`UserReadRepository`, `SessionReadRepository`, `ResetTokenReadRepository`), что обеспечивает готовность к физическому разделению read/write stores без изменения application-слоя.
+
+### IaC
+
+| Артефакт | Расположение |
+|---|---|
+| Docker Compose | `infra/docker-compose.yml` — PostgreSQL + Redis + auth-service, healthcheck, volumes |
+| Kubernetes | `k8s/` — Deployment, Service, Job, ConfigMap, Secret, NetworkPolicy, PDB, Kustomization |
+| Dockerfile | `Dockerfile`, `Dockerfile.migrator` — multi-stage build (builder + alpine) |
+| SQL Migrations | `internal/.../postgres/migrations/` — embedded через `go:embed`, выполняются отдельным контейнером `migrator` до старта сервисов |
+| Makefile | корень репозитория — `make up`, `make test`, `make proto` |
+
+#### Kubernetes манифесты (`k8s/`)
+
+```
+k8s/
+├── kustomization.yaml      # Kustomize — single entry point
+├── namespace.yaml           # Изоляция namespace auth
+├── configmap.yaml           # Не-секретная конфигурация
+├── secret.yaml              # DB/Redis credentials (в prod → Sealed Secrets / Vault)
+├── postgres.yaml            # ⚠ Только для local/minikube — в prod managed DB
+├── redis.yaml               # ⚠ Только для local/minikube — в prod managed Redis
+├── migrator-job.yaml        # Job: миграции до деплоя (Helm pre-install hook)
+├── auth-deployment.yaml     # 2 реплики, gRPC probes, resource limits, rolling update
+├── auth-service.yaml        # ClusterIP Service для gRPC
+├── network-policy.yaml      # Zero-trust: только 50051 ingress, только PG/Redis/DNS egress
+└── pdb.yaml                 # PodDisruptionBudget: minAvailable=1
+```
+
+Запуск на minikube:
+
+```bash
+minikube start
+
+# Собрать образы внутри minikube (чтобы не нужен registry)
+eval $(minikube docker-env)
+docker build -t auth-service:latest -f Dockerfile .
+docker build -t auth-migrator:latest -f Dockerfile.migrator .
+
+# Деплой всего стека
+kubectl apply -k k8s/
+
+# Проверить статус
+kubectl -n auth get pods,jobs,svc
+
+# gRPC запрос через port-forward
+kubectl -n auth port-forward svc/auth-service 50051:50051
+grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check
+```
+
+> **Production**: удалить `postgres.yaml` и `redis.yaml` из `kustomization.yaml`, заменить DNS в Secret/ConfigMap на managed endpoints (RDS, ElastiCache).
+
+## Бизнес-правила и инварианты (из Figma)
+
+### Авторизация (Login)
+- Валидация связки email + password по нажатию кнопки «Войти».
+- При несовпадении — `ErrInvalidCredentials` (не раскрываем, что именно неверно).
+
+### Регистрация (Register)
+Приоритет ошибок валидации:
+1. Email уже занят (`ErrEmailAlreadyTaken`)
+2. Недопустимый формат email (`ErrInvalidEmailFormat`)
+3. Пароли не совпадают (`ErrPasswordMismatch`)
+4. Пароль короче 8 символов (`ErrPasswordTooShort`)
+
+### Восстановление пароля
+- **Step 1**: ввод email, валидация по существующему пользователю.
+- **Step 2**: «Проверьте почту» — ссылка с reset-token отправляется через mock outbox.
+- **Step 3**: новый пароль + подтверждение (совпадение + минимум 8 символов).
+- **Step 4**: результат — успех или ошибка с возможностью «Попробовать заново».
+
+### Reset Token Lifecycle
+- Криптостойкий токен (32 байта), в БД хранится только SHA-256 hash.
+- TTL: 30 минут.
+- Одноразовый: после использования помечается `used_at`.
+- Cooldown: повторный запрос — не раньше чем через 2 минуты.
+
+## Безопасность
+
+- **Пароли**: Argon2id (memory-hard, timing-safe comparison).
+- **Сессии**: refresh token rotation (каждый RefreshToken выдаёт новый refresh + access, старый refresh инвалидируется). Reuse отозванного токена — автоматический revoke всех сессий пользователя (защита от token theft). Revoke по ID или по user.
+- **JWT**: ES256 (ECDSA P-256), асимметричная подпись — приватный ключ подписывает, публичный верифицирует. Short-lived (15 min), claims: sub + email. Готово к multi-service: публичный ключ можно раздать потребителям без риска подделки токенов.
+- **Rate limiting**: Redis Sliding Window Counter для Login (5/5min) и RequestReset (3/5min). Атомарный Lua-скрипт считает взвешенную сумму запросов из текущего и предыдущего окна, что устраняет проблему 2x burst на стыке окон у Fixed Window. Отклонённые варианты: Fixed Window (burst на границе), Sliding Window Log (O(n) памяти на ключ), Token Bucket (допускает burst by design — нежелательно для auth-операций).
+- **Reset tokens**: raw token никогда не сохраняется в БД, только hash. Raw доступен только в mock outbox (логи).
+- **Input limits**: пароль 8–72 символа (защита от DoS через Argon2id на длинном input), reset token ≤ 128 символов (отсечка до SHA-256).
+- **Error masking**: Login не раскрывает, существует ли пользователь (единое сообщение). Reset token ошибки (not found / expired / used) объединены в generic `"invalid or expired token"` — не позволяют перебирать токены.
+- **Internal state protection**: ошибки инфраструктурного слоя не пробрасываются клиенту — `mapDomainError` возвращает generic `"internal server error"` для неизвестных ошибок; user ID и детали БД не фигурируют в gRPC responses.
+
+## Наблюдаемость
+
+- **Structured JSON logs** через `slog` (стандартная библиотека Go 1.21+).
+- **gRPC Logging Interceptor**: метод, duration, status code для каждого запроса.
+- **Domain events**: публикуются в mock outbox с логированием event name и timestamp.
+
+## Ключевые компромиссы (Trade-offs)
+
+| Решение | Почему | Альтернатива |
+|---|---|---|
+| Один gRPC сервис без frontend | Фокус на архитектурной зрелости backend | gRPC-Gateway + React SPA |
+| Логический CQRS (одна БД) | Достаточно для auth-домена, проще операционно | Отдельные read/write stores + event sourcing |
+| Redis rate limiter | Корректен для multi-instance, готов к production | Envoy/Istio rate limiting на infrastructure layer |
+| Mock outbox вместо SMTP | Локальная проверяемость без внешней зависимости | MailHog/SES в Docker Compose |
+| Argon2id вместо bcrypt | Более устойчив к GPU-атакам | bcrypt (проще, достаточен для большинства случаев) |
+| Embedded migrations (golang-migrate) | Версионирование, идемпотентность, rollback, миграции вшиты в бинарник | Flyway, Atlas, ручные SQL-скрипты |
+
+## Следующие шаги для production
+
+1. **Rate limiting на infrastructure layer** — Envoy/Istio rate limiting policy поверх текущего application-level Redis limiter.
+2. **Email delivery** — интеграция с SES/SendGrid через transactional outbox pattern.
+3. **Event sourcing** — для полного audit trail auth-операций.
+4. **Auth interceptor** — gRPC middleware для проверки JWT в metadata на защищённых endpoints.
+5. **OpenTelemetry tracing** — distributed tracing через gRPC interceptor.
+6. **Prometheus metrics endpoint** — counter/histogram для auth-операций.
+7. **Helm chart** — шаблонизация поверх текущих K8s манифестов для управления конфигурацией между окружениями (dev/staging/prod).
+8. **Schema evolution governance** — CI-проверка что каждая миграция обратно совместима (expand-contract lint).
+9. **Мигратор в shared-модуль** — вынести движок миграций в отдельный Go-модуль (или заменить на Atlas), переиспользовать между сервисами. Каждый сервис поставляет свои SQL-файлы, общий движок — логику выполнения.
+10. **MFA (TOTP/WebAuthn)** — второй фактор аутентификации.
+11. **Integration tests** — testcontainers для PostgreSQL в CI.
+12. **ES256 -> ES512** — при росте вычислительных мощностей переход на P-521 кривую для увеличения запаса прочности (обратная совместимость через `alg` в заголовке JWT).
+13. **JWKS endpoint** — раздача публичного ключа через стандартный `.well-known/jwks.json` для автоматической ротации и discovery другими сервисами.
+
+## Тестовое покрытие
+
+| Уровень | Кол-во тестов | Что покрывает |
+|---|---|---|
+| Domain (value objects) | 17 | Email validation, password policy, reset token lifecycle, session validity |
+| Application (command handlers) | 18 | Register, Login, RefreshToken (rotation, reuse detection, revoked session), full Reset flow, error priority |
+| Infrastructure | 9 | Argon2id hash/verify, JWT issue/validate, rate limiter |
+| **Итого** | **38** | |
+
+```bash
+go test -v -count=1 ./...
+make lint   # golangci-lint (errcheck, staticcheck, mnd и др.)
+```

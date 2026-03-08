@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-service-policy
+  namespace: auth
+  labels:
+    app.kubernetes.io/part-of: auth-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: auth-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # gRPC от других сервисов в кластере
+    - ports:
+        - port: 50051
+          protocol: TCP
+  egress:
+    # PostgreSQL
+    - ports:
+        - port: 5432
+          protocol: TCP
+    # Redis
+    - ports:
+        - port: 6379
+          protocol: TCP
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

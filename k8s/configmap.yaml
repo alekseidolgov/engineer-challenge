@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-config
+  namespace: auth
+  labels:
+    app.kubernetes.io/part-of: auth-platform
+data:
+  GRPC_PORT: "50051"
+  REDIS_URL: "redis://redis:6379/0"

@@ -1,1 +1,31 @@
-.idea
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/backend/auth-service
+
+# Test
+*.test
+*.out
+coverage.html
+
+# Dependency
+/backend/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.env
+
+# Cursor
+.cursor/

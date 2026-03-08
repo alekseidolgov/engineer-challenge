@@ -1,0 +1,29 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - ineffassign
+    - staticcheck
+    - unused
+    - mnd  # magic number detector (ex-gomnd)
+
+linters-settings:
+  mnd:
+    checks:
+      - argument
+      - case
+      - condition
+      - return
+    ignored-numbers:
+      - "0"
+      - "1"
+      - "2"   # SplitN limit, array indices
+    ignored-files: ".*_test\\.go$"
+    ignored-functions:
+      - "fmt.Sscanf"
+      - "fmt.Sprintf"
+      - "redis.NewScript"
